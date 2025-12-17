@@ -1,321 +1,570 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Mini Call of Duty - Browser Edition</title>
-    <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: Arial, sans-serif; }
-        
-        /* The Crosshair */
-        #crosshair {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 20px;
-            height: 20px;
-            background: transparent;
-            border: 2px solid rgba(0, 255, 0, 0.7);
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
-            pointer-events: none;
-            z-index: 10;
-        }
-        #crosshair::after {
-            content: '';
-            position: absolute;
-            top: 50%; left: 50%;
-            width: 4px; height: 4px;
-            background: red;
-            transform: translate(-50%, -50%);
-            border-radius: 50%;
-        }
-
-        /* UI Overlay */
-        #ui {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            color: #0f0;
-            font-size: 24px;
-            font-weight: bold;
-            z-index: 10;
-            text-shadow: 1px 1px 2px black;
-        }
-        
-        /* Instructions Overlay */
-        #instructions {
-            position: absolute;
-            top: 50%; left: 50%;
-            transform: translate(-50%, -50%);
-            color: white;
-            text-align: center;
-            background: rgba(0,0,0,0.8);
-            padding: 20px;
-            border: 1px solid #444;
-            cursor: pointer;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mini Call of Duty (2D)</title>
+  <style>
+    body{margin:0;background:#000;color:#fff;font-family:Arial;text-align:center}
+    h2{margin:12px 0 4px}
+    .sub{opacity:.85;margin:0 0 8px}
+    canvas{background:#0f1115;display:block;margin:10px auto;border:2px solid #fff;border-radius:12px;touch-action:none}
+    .hint{font-size:12px;opacity:.7;margin-bottom:10px}
+  </style>
 </head>
 <body>
+  <h2>🎖️ Mini Call of Duty (2D)</h2>
+  <p class="sub">WASD move • Mouse aim • Click shoot • R reload • Shift sprint • Space roll • P pause • R restart on death</p>
+  <div class="hint">Survive waves. Headshots do bonus damage. Pick up ammo/medkits.</div>
+  <canvas id="c" width="900" height="560"></canvas>
 
-    <div id="ui">SCORE: <span id="score">0</span> | HEALTH: <span id="health">100</span></div>
-    <div id="crosshair"></div>
-    
-    <div id="instructions">
-        <h1>MINI CALL OF DUTY</h1>
-        <p>Click to Start</p>
-        <p>WASD to Move | Mouse to Look | Click to Shoot</p>
-    </div>
+<script>
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  // ---------- helpers ----------
+  const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+  const rnd = (a,b)=>a+Math.random()*(b-a);
+  const dist = (ax,ay,bx,by)=>Math.hypot(ax-bx, ay-by);
 
-    <script>
-        // --- GAME VARIABLES ---
-        let camera, scene, renderer;
-        let bullets = [];
-        let enemies = [];
-        let score = 0;
-        let playerHealth = 100;
-        let lastTime = performance.now();
-        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
-        let velocity = new THREE.Vector3();
-        let direction = new THREE.Vector3();
-        let gun;
-        let isGameActive = false;
+  function segCircleHit(x1,y1,x2,y2,cx,cy,r){
+    // line segment vs circle (for bullet trail hit)
+    const dx=x2-x1, dy=y2-y1;
+    const len2=dx*dx+dy*dy || 1;
+    let t=((cx-x1)*dx+(cy-y1)*dy)/len2;
+    t=clamp(t,0,1);
+    const px=x1+t*dx, py=y1+t*dy;
+    return dist(px,py,cx,cy) <= r;
+  }
 
-        // Settings
-        const MOVEMENT_SPEED = 150.0;
-        const ENEMY_SPEED = 20.0;
-        const BULLET_SPEED = 400.0;
-        
-        const uiScore = document.getElementById('score');
-        const uiHealth = document.getElementById('health');
-        const instructions = document.getElementById('instructions');
+  function rectCircleCollide(rx,ry,rw,rh,cx,cy,cr){
+    const px = clamp(cx, rx, rx+rw);
+    const py = clamp(cy, ry, ry+rh);
+    return dist(px,py,cx,cy) <= cr;
+  }
 
-        init();
-        animate();
+  // ---------- input ----------
+  const keys = {};
+  const mouse = {x:W/2, y:H/2, down:false};
 
-        function init() {
-            // 1. Setup Scene
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x111111);
-            scene.fog = new THREE.Fog(0x111111, 0, 700);
+  addEventListener("keydown", e=>{
+    keys[e.key.toLowerCase()] = true;
+    if (e.key.toLowerCase()==="p") paused = !paused;
+    if (gameOver && e.key.toLowerCase()==="r") reset();
+    if (!gameOver && e.key.toLowerCase()==="r") tryReload();
+  });
+  addEventListener("keyup", e=> keys[e.key.toLowerCase()] = false);
 
-            // 2. Setup Camera
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
-            camera.position.y = 10; // Player height
+  canvas.addEventListener("pointermove", e=>{
+    const r=canvas.getBoundingClientRect();
+    mouse.x=(e.clientX-r.left)*(W/r.width);
+    mouse.y=(e.clientY-r.top)*(H/r.height);
+  });
+  canvas.addEventListener("pointerdown", ()=> mouse.down=true);
+  addEventListener("pointerup", ()=> mouse.down=false);
 
-            // 3. Setup Lights
-            const light = new THREE.HemisphereLight(0xeeeeee, 0x777777);
-            light.position.set(0.5, 1, 0.75);
-            scene.add(light);
+  // ---------- world ----------
+  const walls = [
+    {x:120,y:80,w:260,h:30},
+    {x:520,y:90,w:260,h:30},
+    {x:220,y:210,w:30,h:220},
+    {x:650,y:210,w:30,h:220},
+    {x:350,y:320,w:200,h:30},
+    {x:380,y:440,w:140,h:30},
+  ];
 
-            // 4. Create the Map (Floor)
-            const floorGeometry = new THREE.PlaneGeometry(2000, 2000, 100, 100);
-            floorGeometry.rotateX(-Math.PI / 2);
-            const floorMaterial = new THREE.MeshBasicMaterial({ color: 0x222222, wireframe: true });
-            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-            scene.add(floor);
+  // ---------- game state ----------
+  let player, enemies, particles, drops, shots, score, wave, paused, gameOver;
+  let lastEnemySpawn = 0, lastEnemyFire = 0;
 
-            // 5. Create the Weapon (Simple Box)
-            const gunGeometry = new THREE.BoxGeometry(0.5, 0.5, 3);
-            const gunMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
-            gun = new THREE.Mesh(gunGeometry, gunMaterial);
-            gun.position.set(2, -1.5, -3); // Offset gun to bottom right
-            camera.add(gun); // Attach gun to camera
-            scene.add(camera);
+  function reset(){
+    player = {
+      x: W/2, y: H/2, r: 14,
+      hp: 100, maxHp: 100,
+      spd: 2.35,
+      sprint: 1.55,
+      rollCd: 0,
+      rollT: 0,
+      invuln: 0,
+      gun: {
+        magSize: 14,
+        ammo: 14,
+        reserve: 70,
+        reloadMs: 1100,
+        reloading: 0,
+        fireMs: 140,
+        lastShot: 0,
+        spread: 0.045, // radians
+        damage: 18
+      }
+    };
+    enemies = [];
+    particles = [];
+    drops = [];
+    shots = [];
+    score = 0;
+    wave = 1;
+    paused = false;
+    gameOver = false;
+    lastEnemySpawn = 0;
+    lastEnemyFire = 0;
+  }
 
-            // 6. Renderer
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.body.appendChild(renderer.domElement);
+  // ---------- effects ----------
+  function puff(x,y,n=10){
+    for(let i=0;i<n;i++){
+      particles.push({x,y,vx:rnd(-2.2,2.2),vy:rnd(-2.2,2.2),life:rnd(14,28)});
+    }
+  }
 
-            // 7. Event Listeners
-            document.addEventListener('keydown', onKeyDown);
-            document.addEventListener('keyup', onKeyUp);
-            document.addEventListener('mousedown', onMouseDown);
-            window.addEventListener('resize', onWindowResize);
+  function addDrop(x,y){
+    if (Math.random()<0.22){
+      drops.push({
+        x,y,r:10,
+        kind: Math.random()<0.55 ? "ammo" : "med",
+        t: 0
+      });
+    }
+  }
 
-            // Pointer Lock (Mouse Capture)
-            instructions.addEventListener('click', function () {
-                document.body.requestPointerLock();
-            });
+  // ---------- enemies ----------
+  function spawnEnemy(){
+    // spawn outside edges
+    const side = Math.floor(Math.random()*4);
+    let x,y;
+    if (side===0){ x=rnd(0,W); y=-20; }
+    if (side===1){ x=W+20; y=rnd(0,H); }
+    if (side===2){ x=rnd(0,W); y=H+20; }
+    if (side===3){ x=-20; y=rnd(0,H); }
 
-            document.addEventListener('pointerlockchange', function() {
-                if (document.pointerLockElement === document.body) {
-                    isGameActive = true;
-                    instructions.style.display = 'none';
-                } else {
-                    isGameActive = false;
-                    instructions.style.display = 'block';
-                }
-            });
+    const typeRoll = Math.random();
+    let type="grunt";
+    if (typeRoll>0.72) type="rifle";
+    if (typeRoll>0.90) type="tank";
 
-            // Mouse Movement logic
-            document.body.addEventListener('mousemove', (event) => {
-                if (!isGameActive) return;
-                camera.rotation.y -= event.movementX * 0.002;
-                camera.rotation.x -= event.movementY * 0.002;
-                // Clamp looking up/down
-                camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
-            });
+    const base = {
+      grunt:{r:13,hp:40,spd:rnd(1.35,1.75),score:15,shoot:false},
+      rifle:{r:13,hp:55,spd:rnd(1.05,1.45),score:25,shoot:true},
+      tank:{r:18,hp:120,spd:rnd(0.75,1.05),score:60,shoot:true}
+    }[type];
+
+    enemies.push({
+      type,
+      x,y,
+      r: base.r,
+      hp: base.hp + Math.floor((wave-1)*6),
+      maxHp: base.hp + Math.floor((wave-1)*6),
+      spd: base.spd + (wave-1)*0.05,
+      score: base.score,
+      shoot: base.shoot,
+      aimNoise: rnd(0.0, 1.0)
+    });
+  }
+
+  // ---------- collisions ----------
+  function pushOutOfWalls(obj){
+    for (const w of walls){
+      if (rectCircleCollide(w.x,w.y,w.w,w.h,obj.x,obj.y,obj.r)){
+        // minimal push based on closest side
+        const leftDist = Math.abs(obj.x - w.x);
+        const rightDist = Math.abs((w.x+w.w) - obj.x);
+        const topDist = Math.abs(obj.y - w.y);
+        const botDist = Math.abs((w.y+w.h) - obj.y);
+        const m = Math.min(leftDist, rightDist, topDist, botDist);
+        if (m===leftDist) obj.x = w.x - obj.r;
+        else if (m===rightDist) obj.x = w.x + w.w + obj.r;
+        else if (m===topDist) obj.y = w.y - obj.r;
+        else obj.y = w.y + w.h + obj.r;
+      }
+    }
+    obj.x = clamp(obj.x, obj.r+4, W-obj.r-4);
+    obj.y = clamp(obj.y, obj.r+4, H-obj.r-4);
+  }
+
+  // ---------- shooting ----------
+  function tryReload(){
+    const g = player.gun;
+    if (g.reloading || g.ammo===g.magSize || g.reserve<=0) return;
+    g.reloading = g.reloadMs;
+  }
+
+  function shoot(t){
+    const g = player.gun;
+    if (g.reloading || g.ammo<=0) return;
+    if (t - g.lastShot < g.fireMs) return;
+    g.lastShot = t;
+    g.ammo--;
+
+    // direction
+    const ang = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+    const spread = (Math.random()-0.5)*g.spread*(keys["shift"]?1.3:1.0);
+    const a = ang + spread;
+
+    // hitscan: ray until wall or max range
+    const maxRange = 750;
+    const step = 8;
+    let x = player.x, y = player.y;
+    let endX = x, endY = y;
+    let hitEnemy = null, hitPoint = null, headshot = false;
+
+    for (let d=0; d<maxRange; d+=step){
+      const nx = player.x + Math.cos(a)*d;
+      const ny = player.y + Math.sin(a)*d;
+
+      // stop at wall
+      let blocked=false;
+      for (const w of walls){
+        if (nx>=w.x && nx<=w.x+w.w && ny>=w.y && ny<=w.y+w.h){ blocked=true; break; }
+      }
+      if (blocked){ endX=nx; endY=ny; break; }
+
+      // check enemy
+      for (const e of enemies){
+        const r = e.r;
+        if (dist(nx,ny,e.x,e.y) <= r){
+          hitEnemy = e;
+          hitPoint = {x:nx, y:ny};
+          // "head": upper part bonus (simple rule)
+          const headY = e.y - e.r*0.35;
+          headshot = dist(nx,ny,e.x,headY) <= e.r*0.45;
+          endX=nx; endY=ny;
+          d=maxRange; // exit outer loop
+          break;
         }
+      }
+    }
 
-        function onMouseDown() {
-            if (!isGameActive) return;
-            shoot();
+    shots.push({x1:player.x,y1:player.y,x2:endX,y2:endY,life:6});
+
+    if (hitEnemy){
+      const dmg = g.damage * (headshot ? 1.75 : 1.0);
+      hitEnemy.hp -= dmg;
+      puff(endX,endY, headshot ? 16 : 10);
+      if (hitEnemy.hp<=0){
+        score += hitEnemy.score;
+        puff(hitEnemy.x, hitEnemy.y, 26);
+        addDrop(hitEnemy.x, hitEnemy.y);
+        enemies.splice(enemies.indexOf(hitEnemy),1);
+      }
+    } else {
+      puff(endX,endY, 6);
+    }
+  }
+
+  // ---------- enemy fire ----------
+  function enemyFire(t){
+    const interval = Math.max(520, 1450 - wave*55);
+    if (t - lastEnemyFire < interval) return;
+    lastEnemyFire = t;
+
+    const shooters = enemies.filter(e=>e.shoot && dist(e.x,e.y,player.x,player.y) < 520);
+    if (!shooters.length) return;
+    const e = shooters[Math.floor(Math.random()*shooters.length)];
+
+    // if line of sight blocked by wall, skip
+    const ang = Math.atan2(player.y - e.y, player.x - e.x);
+    const step = 10;
+    let blocked=false;
+    for (let d=0; d<600; d+=step){
+      const nx = e.x + Math.cos(ang)*d;
+      const ny = e.y + Math.sin(ang)*d;
+      for (const w of walls){
+        if (nx>=w.x && nx<=w.x+w.w && ny>=w.y && ny<=w.y+w.h){ blocked=true; break; }
+      }
+      if (blocked) break;
+      if (dist(nx,ny,player.x,player.y) < player.r){ break; }
+    }
+    if (blocked) return;
+
+    // enemy hitscan
+    const noise = (Math.random()-0.5) * (0.08 + e.aimNoise*0.06);
+    const a = ang + noise;
+    let endX = e.x + Math.cos(a)*620;
+    let endY = e.y + Math.sin(a)*620;
+
+    // clip at wall
+    for (let d=0; d<620; d+=10){
+      const nx = e.x + Math.cos(a)*d;
+      const ny = e.y + Math.sin(a)*d;
+      let stop=false;
+      for (const w of walls){
+        if (nx>=w.x && nx<=w.x+w.w && ny>=w.y && ny<=w.y+w.h){ stop=true; break; }
+      }
+      if (stop){ endX=nx; endY=ny; break; }
+      if (dist(nx,ny,player.x,player.y) <= player.r){
+        endX=nx; endY=ny;
+        if (player.invuln<=0){
+          player.hp -= (e.type==="tank" ? 16 : 10);
+          player.invuln = 220; // ms i-frames
+          puff(player.x, player.y, 18);
+          if (player.hp<=0){ gameOver=true; }
         }
+        break;
+      }
+    }
+    shots.push({x1:e.x,y1:e.y,x2:endX,y2:endY,life:6,enemy:true});
+    puff(endX,endY, 6);
+  }
 
-        function shoot() {
-            // Create Bullet
-            const geometry = new THREE.SphereGeometry(0.2, 8, 8);
-            const material = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-            const bullet = new THREE.Mesh(geometry, material);
+  // ---------- player movement ----------
+  function updatePlayer(dt){
+    const up=keys["w"]||keys["arrowup"];
+    const dn=keys["s"]||keys["arrowdown"];
+    const lf=keys["a"]||keys["arrowleft"];
+    const rt=keys["d"]||keys["arrowright"];
 
-            // Set bullet position to gun muzzle
-            const vector = new THREE.Vector3();
-            gun.getWorldPosition(vector);
-            bullet.position.copy(vector);
+    let vx=0, vy=0;
+    if (up) vy-=1;
+    if (dn) vy+=1;
+    if (lf) vx-=1;
+    if (rt) vx+=1;
 
-            // Set bullet direction based on where camera is looking
-            const dir = new THREE.Vector3();
-            camera.getWorldDirection(dir);
-            bullet.velocity = dir.multiplyScalar(BULLET_SPEED);
+    const moving = vx||vy;
+    const len = moving ? Math.hypot(vx,vy) : 1;
+    vx/=len; vy/=len;
 
-            bullets.push(bullet);
-            scene.add(bullet);
+    let spd = player.spd;
+    if (keys["shift"] && player.rollT<=0) spd *= player.sprint;
 
-            // Recoil Animation
-            gun.position.z += 0.5;
-            setTimeout(() => { gun.position.z -= 0.5; }, 50);
-        }
+    // roll (short dash + i-frames)
+    if ((keys[" "] || keys["space"]) && player.rollCd<=0 && moving && player.rollT<=0){
+      player.rollT = 180;    // ms
+      player.rollCd = 750;   // ms
+      player.invuln = 240;   // ms
+    }
 
-        function spawnEnemy() {
-            if (enemies.length > 10) return; // Limit enemies
+    if (player.rollT>0){
+      // dash faster
+      player.x += vx * 7.5;
+      player.y += vy * 7.5;
+    } else {
+      player.x += vx * spd;
+      player.y += vy * spd;
+    }
 
-            const geometry = new THREE.BoxGeometry(4, 10, 4);
-            const material = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-            const enemy = new THREE.Mesh(geometry, material);
+    pushOutOfWalls(player);
+  }
 
-            // Random spawn position
-            const angle = Math.random() * Math.PI * 2;
-            const radius = 50 + Math.random() * 100;
-            enemy.position.x = camera.position.x + Math.cos(angle) * radius;
-            enemy.position.z = camera.position.z + Math.sin(angle) * radius;
-            enemy.position.y = 5;
+  // ---------- update loop ----------
+  let lastT = performance.now();
 
-            enemies.push(enemy);
-            scene.add(enemy);
-        }
+  function update(t){
+    if (paused) return;
 
-        function onKeyDown(event) {
-            switch (event.code) {
-                case 'ArrowUp': case 'KeyW': moveForward = true; break;
-                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
-                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
-                case 'ArrowRight': case 'KeyD': moveRight = true; break;
-            }
-        }
+    const dt = t - lastT;
+    lastT = t;
 
-        function onKeyUp(event) {
-            switch (event.code) {
-                case 'ArrowUp': case 'KeyW': moveForward = false; break;
-                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
-                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
-                case 'ArrowRight': case 'KeyD': moveRight = false; break;
-            }
-        }
+    // reload timer
+    const g = player.gun;
+    if (g.reloading>0){
+      g.reloading -= dt;
+      if (g.reloading<=0){
+        const need = g.magSize - g.ammo;
+        const take = Math.min(need, g.reserve);
+        g.reserve -= take;
+        g.ammo += take;
+        g.reloading = 0;
+      }
+    }
 
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        }
+    // timers
+    player.invuln = Math.max(0, player.invuln - dt);
+    player.rollCd = Math.max(0, player.rollCd - dt);
+    player.rollT  = Math.max(0, player.rollT  - dt);
 
-        function animate() {
-            requestAnimationFrame(animate);
+    // player move
+    updatePlayer(dt);
 
-            if (!isGameActive) return;
+    // shoot
+    if (!gameOver && mouse.down) shoot(t);
+    if (!gameOver && g.ammo<=0 && g.reserve>0 && !g.reloading) tryReload();
 
-            const time = performance.now();
-            const delta = (time - lastTime) / 1000;
-            lastTime = time;
+    // waves + spawning
+    const spawnGap = Math.max(260, 950 - wave*55);
+    if (!gameOver && t - lastEnemySpawn > spawnGap){
+      lastEnemySpawn = t;
+      spawnEnemy();
+      if (score > wave*220) wave++;
+    }
 
-            // --- Player Movement ---
-            velocity.x -= velocity.x * 10.0 * delta;
-            velocity.z -= velocity.z * 10.0 * delta;
+    // enemy AI (move toward player)
+    for (const e of enemies){
+      const a = Math.atan2(player.y - e.y, player.x - e.x);
+      const stopDist = (e.type==="rifle" ? 210 : e.type==="tank" ? 170 : 60);
+      const d = dist(e.x,e.y,player.x,player.y);
+      if (d > stopDist){
+        e.x += Math.cos(a)*e.spd;
+        e.y += Math.sin(a)*e.spd;
+        pushOutOfWalls(e);
+      }
+      // melee damage if too close
+      if (d < e.r + player.r + 2 && player.invuln<=0){
+        player.hp -= (e.type==="tank" ? 22 : 12);
+        player.invuln = 220;
+        puff(player.x,player.y,18);
+        if (player.hp<=0) gameOver=true;
+      }
+    }
 
-            direction.z = Number(moveForward) - Number(moveBackward);
-            direction.x = Number(moveRight) - Number(moveLeft);
-            direction.normalize(); // Ensure consistent speed in all directions
+    // enemy fire
+    if (!gameOver) enemyFire(t);
 
-            if (moveForward || moveBackward) velocity.z -= direction.z * MOVEMENT_SPEED * delta;
-            if (moveLeft || moveRight) velocity.x -= direction.x * MOVEMENT_SPEED * delta;
+    // drops pickup
+    for (let i=drops.length-1;i>=0;i--){
+      const d = drops[i];
+      d.t += dt;
+      if (dist(d.x,d.y,player.x,player.y) < d.r + player.r){
+        if (d.kind==="ammo") player.gun.reserve = Math.min(250, player.gun.reserve + 24);
+        if (d.kind==="med")  player.hp = Math.min(player.maxHp, player.hp + 30);
+        drops.splice(i,1);
+      } else if (d.t > 12000){
+        drops.splice(i,1);
+      }
+    }
 
-            // Apply movement relative to camera direction
-            camera.translateX(-velocity.x * delta);
-            camera.translateZ(-velocity.z * delta);
-            camera.position.y = 10; // Keep on floor
+    // particles
+    for (let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.life -= 1;
+      if (p.life<=0) particles.splice(i,1);
+    }
 
-            // --- Bullet Physics ---
-            for (let i = bullets.length - 1; i >= 0; i--) {
-                let b = bullets[i];
-                b.position.addScaledVector(b.velocity, delta);
+    // shot trails
+    for (let i=shots.length-1;i>=0;i--){
+      shots[i].life -= 1;
+      if (shots[i].life<=0) shots.splice(i,1);
+    }
+  }
 
-                // Remove bullet if too far
-                if (b.position.distanceTo(camera.position) > 500) {
-                    scene.remove(b);
-                    bullets.splice(i, 1);
-                }
-            }
+  // ---------- draw ----------
+  function draw(t){
+    ctx.clearRect(0,0,W,H);
 
-            // --- Enemy Logic (AI & Collision) ---
-            if (Math.random() < 0.02) spawnEnemy(); // 2% chance per frame to spawn
+    // floor
+    ctx.globalAlpha = 0.12;
+    ctx.strokeStyle = "#fff";
+    for(let y=0;y<H;y+=40){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+    for(let x=0;x<W;x+=40){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+    ctx.globalAlpha = 1;
 
-            for (let i = enemies.length - 1; i >= 0; i--) {
-                let e = enemies[i];
-                
-                // Move towards player
-                let directionToPlayer = new THREE.Vector3().subVectors(camera.position, e.position).normalize();
-                e.position.addScaledVector(directionToPlayer, ENEMY_SPEED * delta);
-                e.lookAt(camera.position);
+    // walls
+    ctx.fillStyle = "#2b2f3a";
+    for (const w of walls){
+      ctx.fillRect(w.x,w.y,w.w,w.h);
+    }
 
-                // Collision: Enemy hits Player
-                if (e.position.distanceTo(camera.position) < 5) {
-                    playerHealth -= 1;
-                    uiHealth.innerText = Math.floor(playerHealth);
-                    // Flash red
-                    document.body.style.boxShadow = "inset 0 0 50px red";
-                    setTimeout(() => document.body.style.boxShadow = "none", 100);
-                    
-                    if(playerHealth <= 0) {
-                        alert("GAME OVER! Score: " + score);
-                        location.reload();
-                    }
-                }
+    // drops
+    for (const d of drops){
+      ctx.fillStyle = d.kind==="ammo" ? "#ffd54a" : "#ff4ad6";
+      ctx.beginPath(); ctx.arc(d.x,d.y,d.r,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="#000";
+      ctx.font="12px Arial";
+      ctx.fillText(d.kind==="ammo" ? "AM" : "+", d.x-7, d.y+4);
+    }
 
-                // Collision: Bullet hits Enemy
-                for (let j = bullets.length - 1; j >= 0; j--) {
-                    if (bullets[j].position.distanceTo(e.position) < 3) { // Hitbox size
-                        // Kill enemy
-                        scene.remove(e);
-                        enemies.splice(i, 1);
-                        
-                        // Remove bullet
-                        scene.remove(bullets[j]);
-                        bullets.splice(j, 1);
-                        
-                        // Update Score
-                        score += 100;
-                        uiScore.innerText = score;
-                        break; 
-                    }
-                }
-            }
+    // enemies
+    for (const e of enemies){
+      ctx.fillStyle = e.type==="grunt" ? "#ff5a5a" : e.type==="rifle" ? "#b57bff" : "#9cff57";
+      ctx.beginPath(); ctx.arc(e.x,e.y,e.r,0,Math.PI*2); ctx.fill();
 
-            renderer.render(scene, camera);
-        }
-    </script>
+      // HP bar
+      const pct = clamp(e.hp/e.maxHp,0,1);
+      ctx.fillStyle="#000";
+      ctx.fillRect(e.x-e.r, e.y-e.r-10, e.r*2, 6);
+      ctx.fillStyle="#fff";
+      ctx.fillRect(e.x-e.r, e.y-e.r-10, e.r*2*pct, 6);
+    }
+
+    // player
+    // body
+    ctx.fillStyle = player.invuln>0 ? "rgba(0,229,255,0.55)" : "#00e5ff";
+    ctx.beginPath(); ctx.arc(player.x,player.y,player.r,0,Math.PI*2); ctx.fill();
+
+    // aim line
+    const ang = Math.atan2(mouse.y-player.y, mouse.x-player.x);
+    ctx.strokeStyle="#fff";
+    ctx.globalAlpha=0.35;
+    ctx.beginPath();
+    ctx.moveTo(player.x,player.y);
+    ctx.lineTo(player.x+Math.cos(ang)*40, player.y+Math.sin(ang)*40);
+    ctx.stroke();
+    ctx.globalAlpha=1;
+
+    // shots
+    for (const s of shots){
+      ctx.strokeStyle = s.enemy ? "#ff9b2f" : "#ffffff";
+      ctx.globalAlpha = 0.25 + (s.life/6)*0.55;
+      ctx.beginPath();
+      ctx.moveTo(s.x1,s.y1);
+      ctx.lineTo(s.x2,s.y2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+
+    // particles
+    ctx.fillStyle="#fff";
+    for (const p of particles){
+      ctx.fillRect(p.x,p.y,2,2);
+    }
+
+    // HUD
+    const g = player.gun;
+    ctx.fillStyle="#fff";
+    ctx.font="16px Arial";
+    ctx.fillText(`Score: ${score}`, 12, 22);
+    ctx.fillText(`Wave: ${wave}`, 12, 42);
+
+    // HP bar
+    ctx.fillText(`HP`, 12, 68);
+    ctx.fillStyle="#000";
+    ctx.fillRect(42, 56, 200, 14);
+    ctx.fillStyle="#fff";
+    ctx.fillRect(42, 56, 200*clamp(player.hp/player.maxHp,0,1), 14);
+    ctx.fillStyle="#fff";
+    ctx.fillText(`${Math.max(0,Math.floor(player.hp))}/100`, 250, 68);
+
+    // ammo
+    ctx.fillText(`Ammo: ${g.ammo}/${g.magSize}  Reserve: ${g.reserve}`, 12, 94);
+    if (g.reloading){
+      ctx.globalAlpha=0.8;
+      ctx.fillText(`Reloading...`, 12, 116);
+      ctx.globalAlpha=1;
+    }
+
+    if (paused && !gameOver){
+      ctx.fillStyle="rgba(0,0,0,0.65)";
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle="#fff";
+      ctx.font="32px Arial";
+      ctx.fillText("PAUSED", W/2-70, H/2-10);
+      ctx.font="16px Arial";
+      ctx.fillText("Press P to resume", W/2-75, H/2+20);
+    }
+
+    if (gameOver){
+      ctx.fillStyle="rgba(0,0,0,0.75)";
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle="#fff";
+      ctx.font="36px Arial";
+      ctx.fillText("YOU DIED", W/2-85, H/2-20);
+      ctx.font="18px Arial";
+      ctx.fillText(`Final Score: ${score}`, W/2-70, H/2+10);
+      ctx.fillText("Press R to restart", W/2-80, H/2+40);
+    }
+  }
+
+  // ---------- loop ----------
+  function loop(t){
+    if (!gameOver) update(t);
+    draw(t);
+    requestAnimationFrame(loop);
+  }
+
+  reset();
+  requestAnimationFrame(loop);
+})();
+</script>
 </body>
 </html>
